@@ -1,5 +1,5 @@
 const express = require('express');
-const sqlite3 = require('sqlite3').verbose();
+const mysql = require('mysql2');
 const cors = require('cors');
 const path = require('path');
 
@@ -10,57 +10,82 @@ app.use(cors());
 app.use(express.json());
 app.use(express.static(path.join(__dirname, 'public')));
 
-const db = new sqlite3.Database('./database.db', (err) => {
-  if (err) console.error('Lỗi CSDL:', err.message);
-  else console.log('Đã kết nối SQLite Database.');
+const pool = mysql.createPool({
+  host: process.env.DB_HOST || 'localhost',
+  user: process.env.DB_USER || 'student_user',
+  password: process.env.DB_PASSWORD || 'student_pass_123',
+  database: process.env.DB_NAME || 'student_db',
+  waitForConnections: true,
+  connectionLimit: 10,
+  queueLimit: 0
 });
 
-db.serialize(() => {
-  db.run(`
-    CREATE TABLE IF NOT EXISTS students (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      mssv TEXT UNIQUE NOT NULL,
-      fullname TEXT NOT NULL,
-      email TEXT NOT NULL,
-      major TEXT NOT NULL,
-      gpa REAL NOT NULL
-    )
-  `, () => {
-    db.get('SELECT COUNT(*) as count FROM students', (err, row) => {
-      if (row.count === 0) {
-        const stmt = db.prepare('INSERT INTO students (mssv, fullname, email, major, gpa) VALUES (?, ?, ?, ?, ?)');
-        stmt.run('SV001', 'Nguyễn Văn A', 'nguyenvana@gmail.com', 'Công nghệ thông tin', 3.6);
-        stmt.run('SV002', 'Trần Thị B', 'tranthib@gmail.com', 'Kinh tế số', 3.2);
-        stmt.finalize();
-      }
-    });
-  });
-});
+const db = pool.promise();
 
-app.get('/api/students', (req, res) => {
+async function initDB() {
+  try {
+    await db.query(`
+      CREATE TABLE IF NOT EXISTS students (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        mssv VARCHAR(20) UNIQUE NOT NULL,
+        fullname VARCHAR(100) NOT NULL,
+        email VARCHAR(100) NOT NULL,
+        major VARCHAR(100) NOT NULL,
+        gpa FLOAT NOT NULL
+      )
+    `);
+
+    const [rows] = await db.query('SELECT COUNT(*) as count FROM students');
+    if (rows[0].count === 0) {
+      await db.query(`
+        INSERT INTO students (mssv, fullname, email, major, gpa) VALUES 
+        ('SV001', 'Nguyễn Văn A', 'nguyenvana@gmail.com', 'Công nghệ thông tin', 3.6),
+        ('SV002', 'Trần Thị B', 'tranthib@gmail.com', 'Kinh tế số', 3.2)
+      `);
+      console.log('Đã tạo dữ liệu mẫu thành công!');
+    }
+  } catch (err) {
+    console.error('Lỗi khởi tạo CSDL:', err.message);
+  }
+}
+
+initDB();
+
+app.get('/api/students', async (req, res) => {
   const search = req.query.search || '';
-  db.all(`SELECT * FROM students WHERE fullname LIKE ? OR mssv LIKE ? ORDER BY id DESC`, [`%${search}%`, `%${search}%`], (err, rows) => {
-    if (err) return res.status(500).json({ error: err.message });
+  try {
+    const [rows] = await db.query(
+      `SELECT * FROM students WHERE fullname LIKE ? OR mssv LIKE ? ORDER BY id DESC`,
+      [`%${search}%`, `%${search}%`]
+    );
     res.json(rows);
-  });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
-app.post('/api/students', (req, res) => {
+app.post('/api/students', async (req, res) => {
   const { mssv, fullname, email, major, gpa } = req.body;
-  db.run(`INSERT INTO students (mssv, fullname, email, major, gpa) VALUES (?, ?, ?, ?, ?)`, 
-    [mssv, fullname, email, major, parseFloat(gpa)], function (err) {
-      if (err) return res.status(400).json({ error: 'MSSV đã tồn tại hoặc thiếu dữ liệu!' });
-      res.status(201).json({ id: this.lastID, mssv, fullname, email, major, gpa });
-  });
+  try {
+    const [result] = await db.query(
+      `INSERT INTO students (mssv, fullname, email, major, gpa) VALUES (?, ?, ?, ?, ?)`,
+      [mssv, fullname, email, major, parseFloat(gpa)]
+    );
+    res.status(201).json({ id: result.insertId, mssv, fullname, email, major, gpa });
+  } catch (err) {
+    res.status(400).json({ error: 'MSSV đã tồn tại hoặc thiếu dữ liệu!' });
+  }
 });
 
-app.delete('/api/students/:id', (req, res) => {
-  db.run('DELETE FROM students WHERE id = ?', [req.params.id], function (err) {
-    if (err) return res.status(500).json({ error: err.message });
+app.delete('/api/students/:id', async (req, res) => {
+  try {
+    await db.query('DELETE FROM students WHERE id = ?', [req.params.id]);
     res.json({ message: 'Xóa thành công!' });
-  });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
 app.listen(PORT, () => {
-  console.log(`Server chạy tại: http://localhost:${PORT}`);
+  console.log(`Server Node.js đang chạy tại cổng ${PORT}`);
 });
